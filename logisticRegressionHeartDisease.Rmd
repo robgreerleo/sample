@@ -1,0 +1,311 @@
+---
+title: "Classification using Logistic Regression"
+author: "Identifying Heart Disease in Emergency Room Patients"
+output: 
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+```{css, echo = FALSE}
+td {  /* Table  */
+  font-size: 12px;}
+h1, h2, h3 {text-align: center; font-size: c(18px,16px,14px);}
+```
+# $\underline{Introduction}$
+The goal of this project is to identify which emergency room patients presenting with heart disease symptoms truly have heart disease using a dataset of 297 Cleveland Clinic patients. 
+
+A logistic regression model to estimate the log-odds of having heart disease is developed. Model diagnostics are run to check the adequacy and appropriateness of the model. Finally, predictive performance is analyzed using a training and test split of the data set.
+
+```{r libraries, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+packs = c("blorr","caret","DescTools","dplyr","ggplot2","kableExtra", "GGally","generalhoslem","doParallel","kmed","pROC","glmnet", "car", "knitr")
+lapply(packs, require, character.only = TRUE)
+```
+  
+# $\underline{Exploratory\ Data\ Analysis}$  
+### Load and Check Data  
+The Heart Disease data set was downloaded from the kmed package. The first few observations are displayed to check that the loading process was correctly applied. Initial data quality checks were completed including a check for any missing data points and a check for any duplicate observations.
+```{r Data Load}
+heartDisease = data.frame(heart)
+# Check data import
+kbl(head(heartDisease, 4)) %>% kable_styling(position="center", font_size = 12)
+# Check for any missing datapoints and any duplicate observations
+cat("Missing Values Check:", paste(anyNA(heartDisease)),"\n")
+cat("Number of Duplicate Observations:", paste(sum(duplicated(heartDisease)))) 
+``` 
+  
+### Evaluating the Data Structure  
+The data set structure is modified to assign the correct data type and appropriate labels for each binary/categorical feature.  
+
+```{r Data Structures}
+heartDiseaseFinal = heartDisease %>% mutate(age = as.integer(age),
+                                      sex = as.factor(ifelse(sex==TRUE,"M","F")),
+                                      trestbps = as.integer(trestbps),
+                                      chol = as.integer(chol),
+                                      thalach = as.integer(thalach),
+                                      ca = as.integer(ca),
+                                      class = as.logical(ifelse(class == 0,0,1)))
+
+heartDiseaseFinal$cp = recode_factor(heartDiseaseFinal$cp, "1" = "Typical/Atypical",
+                    "2" = "Typical/Atypical","3" = "Non-Anginal", "4" = "Asymptomatic")
+
+heartDiseaseFinal$restecg = recode_factor(heartDiseaseFinal$restecg, "0" = "(Ab)Normal", 
+                    "1" = "(Ab)Normal","2" = "Hypertrophy")
+
+heartDiseaseFinal$slope = recode_factor(heartDiseaseFinal$slope, "1" = "Upsloping",
+                    "2" = "Flat/Down", "3" = "Flat/Down")
+
+heartDiseaseFinal$thal = recode_factor(heartDiseaseFinal$thal, "3" = "Normal/Fixed", 
+                    "6" = "Normal/Fixed", "7" = "Reversable")
+
+rownames(heartDiseaseFinal) = seq.int(nrow(heartDiseaseFinal))   # fix row index numbering
+names(heartDiseaseFinal)[14] = "hd"                              # rename supervisor
+```
+    
+### Overview of Features
+The dataset consists of 1 supervisor and 13 features. 6 features are quantitative and are coded as either numeric or integer. The remaining 7 features are qualitative (either binary or categorical). 
+  
+Summary statistics displaying the range of values for the quantitative features and the counts by level for the qualitative features are displayed below. This is a good way to check for any problems in the data such as any data points beyond the realistic range of possible values. Also, for any model to have value in a practical application, the sample data needs to accurately represent the overall population, the features need to have some plausible relationship to the supervisor and there needs to be sufficient data in each qualitative feature category. 
+  
+    
+```{r Data Tables}
+descNumer = c("Patient Age","Resting Blood Pressure", "Serum Cholesterol mg/dl", 
+              "Max Heart Rate", "ST Depression", "Vessels Colored in Flouroscopy")
+
+numerTable = data.frame(rbind(apply(heartDiseaseFinal[,c(1,4:5,8,10,12)],2,min),
+                   apply(heartDiseaseFinal[,c(1,4:5,8,10,12)],2,median),
+                   round(apply(heartDiseaseFinal[,c(1,4:5,8,10,12)],2,mean),1),
+                   apply(heartDiseaseFinal[,c(1,4:5,8,10,12)],2,max)))
+
+numerTable = rbind(descNumer, numerTable )
+
+rownames(numerTable) = c("Desc.","Min","Median","Mean","Max")
+
+kbl(numerTable, caption = "Summary of Continuous/Numerical Features", align = "c") %>% 
+  kable_styling(position="center", font_size = 14)
+```
+  
+Summary of Binary/Categorical Features| | | 
+:-----:|:-----:|:-----:|:-----:
+$\underline{Sex}$| |$\underline{Resting ECG}$| 
+Female|`r table(heartDiseaseFinal$sex)[1]`|Normal/Abnormal|`r table(heartDiseaseFinal$restecg)[1]`
+Male|`r table(heartDiseaseFinal$sex)[2]`|Hypertrophy|`r table(heartDiseaseFinal$restecg)[2]`
+$\underline{Exceed\ Fasting\ Blood\ Sugar}$| |$\underline{Slope\ of\ Peak\ Exercise\ ST}$ | 
+FALSE|`r table(heartDiseaseFinal$fbs)[1]`|Upsloping|`r table(heartDiseaseFinal$slope)[1]`
+TRUE|`r table(heartDiseaseFinal$fbs)[2]`|Flat/Down|`r table(heartDiseaseFinal$slope)[2]`
+$\underline{Exericse\ Induced\ Angina}$| |$\underline{Chest\ Pain\ Type}$| 
+FALSE|`r table(heartDiseaseFinal$exang)[1]`|Typical/Atypical|`r table(heartDiseaseFinal$cp)[1]`
+TRUE|`r table(heartDiseaseFinal$exang)[2]`|Non-Anginal|`r table(heartDiseaseFinal$cp)[2]`
+$\underline{Thalassemia}$| |Asymptomatic|`r table(heartDiseaseFinal$cp)[3]`
+Normal/Fixed|`r table(heartDiseaseFinal$thal)[1]`| | 
+Reversible|`r table(heartDiseaseFinal$thal)[2]`| | 
+
+
+\newpage  
+### Pairs Plots
+Pairs plots are a visual way to evaluate each feature's relation to the supervisor, other features and it's own distribution. They also enable visual identification of outliers, imbalances in qualitative categories and whether some features might need a transformation or interaction term. A subset of the pairs plot is provided below: 
+
+```{r Pairs Plot, fig.height=10, fig.width = 10, message = FALSE}
+ggpairs(
+ heartDiseaseFinal[,c(14,1,2,10,5,8)],
+ mapping = ggplot2::aes(color = hd, alpha = 0.85),
+ upper = list(continuous = wrap("density"), combo = "box_no_facet"),
+ lower = list(continuous = wrap("points"), combo = wrap("dot_no_facet")),
+)  
+```
+  
+From the pairs plots it appears that there may be some outliers/extreme observations in both oldpeak (row 1, column 4) and chol (row 1, column 5). These observations are likely to have a larger influence (high leverage) on the regression model and will be evaluated in model diagnostics. An interaction term between two features may be needed if the covariance between the two varies for each class of the supervisor.  Age and thalach might require an interaction term (row 6, column 2).
+  
+
+  
+\newpage  
+# $\underline{Modeling}$  
+Logistic regression requires that the following assumptions be met:  
+    - the supervisor is binary   
+    - the relationship between the log-odds of the supervisor and the features is linear and the features are correctly specified  
+    - observations are independent  
+    - stong multicollinearity is absent   
+    - outliers don't exhibit high leverage  
+    - sample size is sufficiently large  
+
+  
+### Check for Skewness
+If the density of a feature is strongly skewed, then the log-odds can depend on both the feature and the natural log transformation of that same feature. A commonly used heuristic is to try a natural log transformation if the absolute value of the skewness exceeds 2. None of the quantitative features meet this criteria.  
+```{r Skew}
+# check for high skewness
+skewInd = c(1,4,5,8,10,12)
+skewnessVec = round(heartDiseaseFinal[,skewInd] %>% 
+                      sapply(., e1071::skewness, na.rm = TRUE),3)
+cat("Number of features with high skew:", paste(sum(abs(skewnessVec)>=2)))
+```
+
+### Check for Multicollinearity  
+Multicollinearity occurs when two or more features are strongly correlated with one another, meaning that the information provided by each feature with respect to the supervisor isn't separable or distinct. This can result in model fitting problems but can be alleviated by removing one of the highly correlated features or applying regularization techniques such as ridge regression. A partial check for multicollinearity is performed below. 
+```{r Multicollinearity}
+multiCol = model.matrix(~., data=heartDiseaseFinal[,-14], fullRank = TRUE)[,-1] %>% 
+  cor(use="pairwise.complete.obs")     
+cat("Number of feature pairs with high correlation:", 
+    paste(sum(multiCol[upper.tri(multiCol, diag = FALSE)] >= .85)))
+```
+
+
+```{r Data Splitting, include = FALSE}
+# Separate data into training and test sets
+set.seed(1)
+yAllData = heartDiseaseFinal$hd
+xAllData = heartDiseaseFinal[,-14]
+trainIndex = createDataPartition(yAllData, p=.7, list = FALSE) %>% as.vector(.)
+trainData = heartDiseaseFinal[trainIndex,]
+testData = heartDiseaseFinal[-trainIndex,]
+```
+
+
+\newpage  
+## MODEL 1  
+A preliminary model to estimate the log odds of having heart disease is estimated using all 13 features.  
+```{r Model 1}
+model1Out = glm(hd~., data = trainData, family = "binomial")
+summary(model1Out)
+```
+
+### Model 1 Interpretation  
+In logistic regression a "base case" for the qualitative features is assigned. Here, the base case is a female patient with (a)typical chest pain, an upsloping slope of peak exercise CT, normal Thalassemia tests, and no excess fasting blood sugar, hypertrophy or exercise induced angina. The log-odds of having heart disease for someone that meets this criteria is contained in the intercept coefficient (excluding the values for the quantitative features). As a result, The coefficients of the other qualitative predictors measure the change in log-odds of having heart disease versus this base case.  
+  
+For example, for a female with asymptomatic chest pain, the estimated log-odds of having heart disease increases by 1.31, on average, controlling or holding all other features constant. This means that the odds of having heart disease when asymptomatic chest pain is present are $e^{1.31}$ = 3.7 times higher, on average, as compared to the base case, controlling for all other features.  
+  
+The interpretation of continuous feature coefficients is more straightforward. For example, a one year increase in age is associated with an expected average .018 decrease in the log-odds of having heart disease, (or $e^{-.018}$ = a 0.982 *multiplicative* effect, which is about a 2% decrease in odds), again controlling for the other features.   
+
+The estimated coefficient for age provides an interesting result. While the coefficient is negative, the practical effect is very small, especially compared to the standard error which indicates that there is **not** strong evidence that age is associated with heart disease. The test statistic is: $z=\frac{-.018-0}{.029}=-0.63$ which translates to a p-value of 0.528, much higher than the typical 0.05 ( 5%) level for statistical significance. A 95% confidence interval for the estimated age coefficient is:  
+$$(est. coef.) ^+_- (1.96)*(std. error) $$
+$$(-.018) ^+_- (1.96)*(.029) = (-0.075,0.039)$$ 
+The confidence interval for the estimated effect of age on the log-odds of heart disease contains 0, indicating that the model has not found significant evidence that age is associated with heart disease.   
+  
+\newpage   
+# $\underline{Model\ Diagnostics}$  
+## Model 1 Validation  
+The next step is to review model diagnostics to check for misspecifications, violations of modeling assumptions or any other problems with the model.  
+  
+### Misspecification Check  
+One method to check for model misspecification is to use linktest which regresses the supervisor on the predicted value ("fit") and squared predicted value ("fit2") from model 1. A correctly specified model will have a statistically significant fit value and a non-significant fit2 value, which is the case here.  
+```{r Linktest}
+print(blr_linktest(model1Out)$coef, digits=2)
+```
+  
+**Goodness of Fit**  
+There are a number of goodness of fit (GOF) metrics that can be used to check a logistic regression model. However, each has some drawbacks. Here we look at three GOF metrics.  
+  
+Hosmer-Lemeshow's GOF separates observations into groups and compares the model's predicted number of patients with heart disease to the actual observed number in each group. Large differences between these two in each group indicates a poor fit and would be indicated by a low p-value. A high p-value, which we have here, indicates an adequate fit.
+```{r GOF1}
+logitgof(trainData$hd, fitted(model1Out), g=10)
+```
+  
+**Psuedo R-squared**    
+R-squared in linear regression measures the proportion of variance explained by the model. In logistic regression, this isn't available as the variance is fixed. But a similar measure using the proportion of log likelihoods between the model with features and an intercept only model can be used. There are several versions of this GOF metric which include various adjustments. The more commonly used metrics are included here, and all indicate that the model with features has sufficient GOF.    
+```{r GOF2}
+print(PseudoR2(model1Out, which = c("McFadden","CoxSnell","AldrichNelson",
+                                    "VeallZimmermann")), digits=3)
+```
+  
+**Full vs Intercept Only Model**    
+A third GOF check tests whether the proposed model is better than an intercept only model with no features. Deviance tests can be used to compare these two models with a lower deviance being better. Deviance compares the maximized log-likelihoods of the proposed model with a saturated model where there are as many parameters as there are observations. To test whether Model 1 is better than an intercept only model, the differences in their respective deviances can be used. 
+
+Null Hypothesis  - $H_0:$ There is no significant reduction in deviance between the Null Model and Model 1  
+Alternative      - $H_A:$ The reduction in deviance is significant, Model 1 is appropriate  
+```{r GOF3}
+m1NullDev = summary(model1Out)$null.deviance
+m1NullDF = summary(model1Out)$df.null
+m1Dev = summary(model1Out)$deviance
+m1df =  summary(model1Out)$df.residual 
+(pValue = 1 - pchisq(m1NullDev-m1Dev, df = (m1NullDF-m1df)))
+```
+The p-value is very close to 0 indicating a rejection of $H_0$. There is strong evidence that the reduction in deviance is significant and that Model 1 is a more appropriate model than the intercept only model.    
+  
+### Leverage and Deviance  
+A plot of the standardized deviance residuals by leverage can help identify any remaining modeling or data problems. Points 101 and 77 in the test dataset correspond to data points that have unusually high leverage, indicating that they have an outsized effect on the model's estimated coefficients as compared to other data points. These two points correspond to people with very high levels of cholesterol (and for point 77, high levels of oldpeak). As cholesterol isn't a statistically significant feature, it will be removed from the model. After doing so, this plot can be rerun which would show that no points with unusually high leverage remain.  
+
+```{r Leverage, fig.align="center"}
+#Figure 8.13 on page 291
+par(mfrow=c(1,1))
+hvalues <- influence(model1Out)$hat
+stanresDeviance <- residuals(model1Out)/sqrt(1-hvalues)
+leverageDF = bind_cols(hvalues, stanresDeviance)
+leverageDF$row = seq.int(nrow(leverageDF))
+leverageDF$rowch = as.character(leverageDF$row)
+leverageDF$rowch[hvalues<=.25] = ""
+
+ggplot(leverageDF, aes(x=hvalues, y=stanresDeviance, label = rowch)) +    
+  geom_point() + geom_hline(yintercept = 0, lty=2) +
+  geom_text(aes(label = rowch), vjust = - 0.5, size = 2) + 
+  scale_y_continuous(limits = c(-3,3)) + 
+  labs(x = "Leverage", y = "Standardized Deviance Residuals")
+
+```
+  
+The two data outliers with high levels of chol:  
+```{r Outliers}
+kbl((trainData[c(77,101),])) %>% 
+  kable_styling(position="center", font_size = 8) %>%  
+  column_spec(6, color = "red") 
+```
+\newpage    
+## MODEL 2 - Remove Chol 
+Chol is removed as a feature. The only notable change in the estimated model coefficients is a decrease in the magnitude of the intercept term, although it remains statistically insignificant.  
+```{r}
+hdReduced = trainData[,-5]
+model2Out = glm(hd~., data = hdReduced, family = "binomial")
+summary(model2Out)$coef
+```
+  
+The model diagnostics were repeated for Model 2, but had no notable changes and are thus excluded here. Further model validation steps could be taken, including marginal model plots, and feature selection methods could also be employed, such as stepwise selection or LASSO. 
+  
+  
+# $\underline{Model\ Performance}$
+Once the model is trained and the feature coefficients are estimated, they can be applied to the test data to check for how accurate the model is in correctly classifying patients. An alternative and/or complement to a training/test split would be to conduct cross validation. Cross validation is skipped for this report.   
+  
+### Accuracy  
+Accuracy measures the portion of observations in the test data set that the model correctly identifies (as having or not having heart disease). One technical note: the logistic regression model estimates the average log-odds of having heart disease using data provided by the features. This estimate must be converted into a binary classifier, as either having or not having heart disease. Thus a cutoff, or threshold value dividing the two classes must be set to assign the predicted classifications. Typically, a threshold probability of 50% is used. Log-odds can be converted to a probability by the following formula: $$\frac{e^{log-odds}}{1+e^{log-odds}}$$  
+
+```{r Acc}
+hdReducedTest = testData[,-5]
+yHatProbM2 =  predict(model2Out,newdata=hdReducedTest,type='response')
+yHatM2 = ifelse(yHatProbM2 >= 0.5,TRUE,FALSE)   # applies a .5 threshold
+accM2 = mean(yHatM2 == hdReducedTest$hd)
+cat("Accuracy:", paste(round(accM2,3)*100), "%")
+```
+  
+85.4% of the test data observations were correctly predicted. This is fairly good performance for a simple model but probably not sufficient for use in an emergency room setting. Applying feature selection methods or gathering more data might result in better performance.  
+
+### ROC Curve
+The ROC curve plots the tradeoff between sensitivity and specificity (or 1-specificity) for every possible threshold probability value. Sensitivity is the percentage of correctly identified patients with heart disease. Specificity is the percentage of correctly identified patients without heart disease. It may be the case that a researcher is more interested in one of these measures over the other and can adjust the probability threshold to increase the model's performance in one of these metrics. The ROC curve below shows points for thresholds of 50% (in blue) and 70% (in red). Increasing the threshold probability increases the specificity but decreases the sensitivity. Decreasing the threshold will have the opposite effect.  
+```{r ROC, message = FALSE, fig.align="center"}
+yTestROC = as.numeric(hdReducedTest$hd)
+rocCurveM2 = roc(yTestROC, yHatProbM2)
+plot(rocCurveM2, legacy.axe = TRUE)
+abline(h = 1, lty = 2, col = "gray")
+abline(v = 1, lty = 2, col = "gray")
+# add threshold points
+points(x= rocCurveM2$specificities[min(which(rocCurveM2$thresholds[2:84]>=.5))], 
+       y=rocCurveM2$sensitivities[min(which(rocCurveM2$thresholds[2:84]>=.5))], 
+       col = "blue", pch = 16, cex = .9)
+text(x= 0.88, y=0.90, "T=.5", col = "blue", cex = .75)
+points(x= rocCurveM2$specificities[min(which(rocCurveM2$thresholds[2:84]>=.7))],   
+       y=rocCurveM2$sensitivities[min(which(rocCurveM2$thresholds[2:84]>=.7))], 
+       col = "red", pch = 16, cex = .9)
+text(x= rocCurveM2$specificities[min(which(rocCurveM2$thresholds[2:84]>=.5))]-.025, 
+     y=rocCurveM2$sensitivities[min(which(rocCurveM2$thresholds[2:84]>=.7))]-.025,
+     "T=.7", col = "red", cex = .75)
+cat("Area Under Curve:", paste(round(rocCurveM2$auc,3)))  
+```
+A perfect model would have an ROC curve in the shape of an upside down L, following the plotted dotted lines. The area under the ROC curve, or "AUC" is a frequently used metric that describes the performance of a classification model averaged across all possible values of the threshold probability. The maximum possible AUC is 1. Here, the AUC value of .9 is quite good.
+
+### Confusion Matrix
+A confusion matrix is a table showing the observed and predicted classes in the test dataset (using the selected 50% probability threshold). The model correctly predicts 42 patients as not having heart disease (False) and 34 as having heart disease (True). The model incorrectly identifies 6 patients with heart disease as not having it (false negative) and 7 patients without heart disease as having it (false positive).
+```{r CM}
+confusionOut = confusionMatrix(reference = as.factor(yHatM2), 
+                               data = as.factor(hdReducedTest$hd))
+confusionOut[2]
+```
+
+# $\underline{Conclusion}$
+The goal of this project was to demonstrate the steps in building and evaluating a classification model using logistic regression, to determine which features are associated with heart disease and to evaluate model performance. Given a small amount of features and data, the model performs fairly well but not quite well enough to use in an emergency room setting.
